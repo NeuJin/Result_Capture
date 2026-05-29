@@ -1,0 +1,23 @@
+# Generated outputs (not committed)
+ConrodAnalysis/output/screenshots/
+ConrodAnalysis/output/csv/
+ConrodAnalysis/output/reports/
+ConrodAnalysis/output/screenshot_manifest.txt
+
+# Temp TCL files generated at runtime
+*.tcl.tmp
+conrod_stress.tcl
+conrod_sf.tcl
+
+# Excel lock files
+~$*.xlsm
+~$*.xlsx
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# OS
+Thumbs.db
+.DS_Store
