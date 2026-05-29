@@ -42,14 +42,19 @@ def check_vba_files():
 def build_powershell_script() -> str:
     """Generate the PowerShell script that creates the .xlsm via COM."""
 
-    # Build the list of Import calls for each .bas file
+    # Use forward slashes — accepted by both PowerShell and Excel COM,
+    # avoids all backslash-escaping issues in PowerShell double-quoted strings.
+    def ps_path(p: Path) -> str:
+        return str(p).replace("\\", "/")
+
     import_lines = []
     for mod in VBA_MODULES:
-        path = str(VBA_DIR / mod).replace("\\", "\\\\")
-        import_lines.append(f'    $wb.VBProject.VBComponents.Import("{path}") | Out-Null')
+        import_lines.append(
+            f'    $wb.VBProject.VBComponents.Import("{ps_path(VBA_DIR / mod)}") | Out-Null'
+        )
     imports_block = "\n".join(import_lines)
 
-    xlsm_path = str(OUTPUT_XLSM).replace("\\", "\\\\")
+    xlsm_path = ps_path(OUTPUT_XLSM)
 
     sheet_names = ["Config", "NodeSets", "Legend", "Views", "Report", "Log"]
     sheet_setup = ""
@@ -67,39 +72,37 @@ $ErrorActionPreference = "Stop"
 $xl = New-Object -ComObject Excel.Application
 $xl.Visible = $false
 $xl.DisplayAlerts = $false
-$xl.AutomationSecurity = 1  # msoAutomationSecurityLow — allow macros during automation
+$xl.AutomationSecurity = 1
 
 try {{
     $wb = $xl.Workbooks.Add()
-    $xl.DisplayAlerts = $false
 
-    # Ensure exactly 6 sheets, named correctly
+    # --- STEP 1: shape the workbook (sheets only, no VBA yet) ---
     while ($wb.Sheets.Count -lt 6) {{
         $wb.Sheets.Add([System.Reflection.Missing]::Value, $wb.Sheets($wb.Sheets.Count)) | Out-Null
     }}
     while ($wb.Sheets.Count -gt 6) {{
+        $xl.DisplayAlerts = $false
         $wb.Sheets($wb.Sheets.Count).Delete()
     }}
-
-    # Rename sheets
 {sheet_setup}
 
-    # Import VBA modules
-{imports_block}
-
-    # Make visible before SaveAs so any dialog can be seen/handled
-    $xl.Visible = $true
+    # --- STEP 2: SaveAs xlsm NOW, while workbook is clean ---
+    # (SaveAs on a macro-modified workbook often fails; save the blank shell first)
     $xl.DisplayAlerts = $false
-
-    # Save as xlsm (52 = xlOpenXMLWorkbookMacroEnabled)
     if (Test-Path "{xlsm_path}") {{ Remove-Item "{xlsm_path}" -Force }}
     $wb.SaveAs("{xlsm_path}", 52)
+    Write-Host "SHELL SAVED: {xlsm_path}"
 
-    Write-Host "SAVED: {xlsm_path}"
+    # --- STEP 3: import VBA modules into the saved xlsm ---
+{imports_block}
 
-    # Run InitialiseWorkbook to format all sheets
+    # --- STEP 4: run setup macro + final save ---
+    $xl.Visible = $true
+    $xl.DisplayAlerts = $false
     $xl.Run("SetupWorkbook.InitialiseWorkbook")
     Start-Sleep -Seconds 2
+    $xl.DisplayAlerts = $false
     $wb.Save()
 
     Write-Host "DONE"
@@ -109,7 +112,7 @@ catch {{
     exit 1
 }}
 finally {{
-    # Keep Excel open so user can see result
+    # Keep Excel open so user can inspect the result
 }}
 """
     return script
