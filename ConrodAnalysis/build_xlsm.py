@@ -67,16 +67,16 @@ $ErrorActionPreference = "Stop"
 $xl = New-Object -ComObject Excel.Application
 $xl.Visible = $false
 $xl.DisplayAlerts = $false
+$xl.AutomationSecurity = 1  # msoAutomationSecurityLow — allow macros during automation
 
 try {{
     $wb = $xl.Workbooks.Add()
+    $xl.DisplayAlerts = $false
 
     # Ensure exactly 6 sheets, named correctly
-    # Add sheets if fewer than needed
     while ($wb.Sheets.Count -lt 6) {{
         $wb.Sheets.Add([System.Reflection.Missing]::Value, $wb.Sheets($wb.Sheets.Count)) | Out-Null
     }}
-    # Remove extra sheets
     while ($wb.Sheets.Count -gt 6) {{
         $wb.Sheets($wb.Sheets.Count).Delete()
     }}
@@ -87,6 +87,10 @@ try {{
     # Import VBA modules
 {imports_block}
 
+    # Make visible before SaveAs so any dialog can be seen/handled
+    $xl.Visible = $true
+    $xl.DisplayAlerts = $false
+
     # Save as xlsm (52 = xlOpenXMLWorkbookMacroEnabled)
     if (Test-Path "{xlsm_path}") {{ Remove-Item "{xlsm_path}" -Force }}
     $wb.SaveAs("{xlsm_path}", 52)
@@ -94,7 +98,6 @@ try {{
     Write-Host "SAVED: {xlsm_path}"
 
     # Run InitialiseWorkbook to format all sheets
-    $xl.Visible = $true
     $xl.Run("SetupWorkbook.InitialiseWorkbook")
     Start-Sleep -Seconds 2
     $wb.Save()

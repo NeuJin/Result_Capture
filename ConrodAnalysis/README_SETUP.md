@@ -4,10 +4,9 @@
 
 ### Option A: Auto-build (recommended)
 
-**Requires:** Python + pywin32
+**Requires:** Python 3.8+ (standard library only — no pip install needed)
 
 ```
-pip install pywin32
 python build_xlsm.py
 ```
 
