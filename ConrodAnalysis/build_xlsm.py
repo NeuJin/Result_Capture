@@ -1,30 +1,26 @@
 """
-build_xlsm.py — Creates ConrodAnalysis.xlsm with all sheets formatted
-and all VBA modules imported.
+build_xlsm.py — Creates ConrodAnalysis.xlsm with all sheets + VBA modules.
 
-Requirements:
-  pip install pywin32
+Uses ONLY Python 3.8 standard library (subprocess, os, sys, tempfile, pathlib).
+PowerShell handles Excel COM automation — no pip install required.
 
 Run once:
-  python build_xlsm.py
+    python build_xlsm.py
 
-IMPORTANT: Excel must have "Trust access to the VBA project object model"
-  enabled: File → Options → Trust Center → Trust Center Settings
-           → Macro Settings → tick "Trust access to the VBA project object model"
+IMPORTANT: Excel must have VBA project trust enabled (one-time):
+    Excel -> File -> Options -> Trust Center -> Trust Center Settings
+    -> Macro Settings -> tick "Trust access to the VBA project object model"
 """
 
 import os
 import sys
-import time
+import tempfile
+import subprocess
+from pathlib import Path
 
-try:
-    import win32com.client as win32
-except ImportError:
-    sys.exit("pywin32 not found. Run: pip install pywin32")
-
-SCRIPT_DIR   = os.path.dirname(os.path.abspath(__file__))
-VBA_DIR      = os.path.join(SCRIPT_DIR, "vba")
-OUTPUT_XLSM  = os.path.join(SCRIPT_DIR, "ConrodAnalysis.xlsm")
+SCRIPT_DIR  = Path(__file__).parent.resolve()
+VBA_DIR     = SCRIPT_DIR / "vba"
+OUTPUT_XLSM = SCRIPT_DIR / "ConrodAnalysis.xlsm"
 
 VBA_MODULES = [
     "ConfigManager.bas",
@@ -37,61 +33,129 @@ VBA_MODULES = [
 ]
 
 
-def main():
-    print("Building ConrodAnalysis.xlsm ...")
+def check_vba_files():
+    missing = [m for m in VBA_MODULES if not (VBA_DIR / m).exists()]
+    if missing:
+        sys.exit(f"Missing VBA files in {VBA_DIR}:\n" + "\n".join(missing))
 
-    xl = win32.Dispatch("Excel.Application")
-    xl.Visible = False
-    xl.DisplayAlerts = False
 
-    # New workbook
-    wb = xl.Workbooks.Add()
+def build_powershell_script() -> str:
+    """Generate the PowerShell script that creates the .xlsm via COM."""
 
-    # Pre-create sheets so SetupWorkbook.InitialiseWorkbook can find them
+    # Build the list of Import calls for each .bas file
+    import_lines = []
+    for mod in VBA_MODULES:
+        path = str(VBA_DIR / mod).replace("\\", "\\\\")
+        import_lines.append(f'    $wb.VBProject.VBComponents.Import("{path}") | Out-Null')
+    imports_block = "\n".join(import_lines)
+
+    xlsm_path = str(OUTPUT_XLSM).replace("\\", "\\\\")
+
     sheet_names = ["Config", "NodeSets", "Legend", "Views", "Report", "Log"]
-    # Rename existing sheets first
-    existing = [wb.Sheets(i + 1).Name for i in range(wb.Sheets.Count)]
-    for i, name in enumerate(sheet_names):
-        if i < len(existing):
-            wb.Sheets(i + 1).Name = name
-        else:
-            wb.Sheets.Add(After=wb.Sheets(wb.Sheets.Count)).Name = name
+    sheet_setup = ""
+    for i, name in enumerate(sheet_names, start=1):
+        sheet_setup += f"""
+    if ($wb.Sheets.Count -lt {i}) {{
+        $wb.Sheets.Add([System.Reflection.Missing]::Value, $wb.Sheets($wb.Sheets.Count)) | Out-Null
+    }}
+    $wb.Sheets({i}).Name = "{name}"
+"""
 
-    # Remove extra default sheets
-    while wb.Sheets.Count > len(sheet_names):
-        wb.Sheets(wb.Sheets.Count).Delete
+    script = f"""
+$ErrorActionPreference = "Stop"
+
+$xl = New-Object -ComObject Excel.Application
+$xl.Visible = $false
+$xl.DisplayAlerts = $false
+
+try {{
+    $wb = $xl.Workbooks.Add()
+
+    # Ensure exactly 6 sheets, named correctly
+    # Add sheets if fewer than needed
+    while ($wb.Sheets.Count -lt 6) {{
+        $wb.Sheets.Add([System.Reflection.Missing]::Value, $wb.Sheets($wb.Sheets.Count)) | Out-Null
+    }}
+    # Remove extra sheets
+    while ($wb.Sheets.Count -gt 6) {{
+        $wb.Sheets($wb.Sheets.Count).Delete()
+    }}
+
+    # Rename sheets
+{sheet_setup}
 
     # Import VBA modules
-    vba_project = wb.VBProject
-    for mod_file in VBA_MODULES:
-        mod_path = os.path.join(VBA_DIR, mod_file)
-        if not os.path.exists(mod_path):
-            print(f"  WARNING: {mod_file} not found, skipping")
-            continue
-        vba_project.VBComponents.Import(mod_path)
-        print(f"  Imported: {mod_file}")
+{imports_block}
 
     # Save as xlsm (52 = xlOpenXMLWorkbookMacroEnabled)
-    if os.path.exists(OUTPUT_XLSM):
-        os.remove(OUTPUT_XLSM)
-    wb.SaveAs(OUTPUT_XLSM, FileFormat=52)
-    print(f"  Saved: {OUTPUT_XLSM}")
+    if (Test-Path "{xlsm_path}") {{ Remove-Item "{xlsm_path}" -Force }}
+    $wb.SaveAs("{xlsm_path}", 52)
 
-    # Run InitialiseWorkbook to set up all sheets
-    print("  Running InitialiseWorkbook ...")
-    xl.Visible = True
-    time.sleep(1)
-    xl.Run("SetupWorkbook.InitialiseWorkbook")
-    time.sleep(2)
+    Write-Host "SAVED: {xlsm_path}"
 
-    wb.Save()
-    print("\nDone! ConrodAnalysis.xlsm is ready.")
-    print("Next steps:")
-    print("  1. Fill in Config sheet (result file, .inp path, HyperView exe)")
-    print("  2. Click [Parse .inp] to populate NodeSets")
-    print("  3. Set Legend values, check Views")
-    print("  4. Click [Run Analysis]")
+    # Run InitialiseWorkbook to format all sheets
+    $xl.Visible = $true
+    $xl.Run("SetupWorkbook.InitialiseWorkbook")
+    Start-Sleep -Seconds 2
+    $wb.Save()
+
+    Write-Host "DONE"
+}}
+catch {{
+    Write-Host "ERROR: $_"
+    exit 1
+}}
+finally {{
+    # Keep Excel open so user can see result
+}}
+"""
+    return script
+
+
+def run():
+    check_vba_files()
+
+    print(f"Building: {OUTPUT_XLSM}")
+    print(f"VBA dir : {VBA_DIR}")
+
+    ps_script = build_powershell_script()
+
+    # Write PS script to temp file
+    tmp = tempfile.NamedTemporaryFile(
+        mode="w", suffix=".ps1", delete=False, encoding="utf-8"
+    )
+    tmp.write(ps_script)
+    tmp.close()
+
+    print("Running PowerShell Excel automation ...")
+    try:
+        result = subprocess.run(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-ExecutionPolicy", "Bypass",
+                "-File", tmp.name,
+            ],
+            capture_output=True,
+            text=True,
+        )
+        print(result.stdout.strip())
+        if result.returncode != 0:
+            print("STDERR:", result.stderr.strip())
+            sys.exit(f"PowerShell exited with code {result.returncode}")
+    finally:
+        os.unlink(tmp.name)
+
+    if OUTPUT_XLSM.exists():
+        print(f"\nSuccess! File created: {OUTPUT_XLSM}")
+        print("\nNext steps:")
+        print("  1. Fill in Config sheet (result file, .inp, HyperView exe path)")
+        print("  2. Click [Parse .inp] to load node sets")
+        print("  3. Set Legend values, check Views")
+        print("  4. Click [Run Analysis]")
+    else:
+        sys.exit("Build failed — xlsm file not created. Check Excel trust setting.")
 
 
 if __name__ == "__main__":
-    main()
+    run()
