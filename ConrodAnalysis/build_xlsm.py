@@ -69,13 +69,22 @@ def build_powershell_script() -> str:
     script = f"""
 $ErrorActionPreference = "Stop"
 
+# --- Close any leftover Excel COM instances from previous runs ---
+try {{
+    $stale = [System.Runtime.InteropServices.Marshal]::GetActiveObject("Excel.Application")
+    Write-Host "INFO: Found existing Excel instance — closing it first"
+    $stale.DisplayAlerts = $false
+    $stale.Quit()
+    [System.Runtime.InteropServices.Marshal]::ReleaseComObject($stale) | Out-Null
+    Start-Sleep -Seconds 2
+}} catch {{ }}  # no existing instance = fine
+
 $xl = New-Object -ComObject Excel.Application
 $xl.Visible = $false
 $xl.DisplayAlerts = $false
-$xl.AutomationSecurity = 1
 
 try {{
-    $wb = $xl.Workbooks.Add()
+    $wb = $xl.Workbooks.Add(1)   # 1 = xlWBATWorksheet (normal blank workbook)
 
     # --- STEP 1: shape the workbook (sheets only, no VBA yet) ---
     while ($wb.Sheets.Count -lt 6) {{
@@ -88,11 +97,13 @@ try {{
 {sheet_setup}
 
     # --- STEP 2: SaveAs xlsm NOW, while workbook is clean ---
-    # (SaveAs on a macro-modified workbook often fails; save the blank shell first)
     $xl.DisplayAlerts = $false
-    if (Test-Path "{xlsm_path}") {{ Remove-Item "{xlsm_path}" -Force }}
-    $wb.SaveAs("{xlsm_path}", 52)
-    Write-Host "SHELL SAVED: {xlsm_path}"
+    $savePath = "{xlsm_path}"
+    Write-Host "DEBUG: Saving to $savePath"
+    Write-Host "DEBUG: Workbook name is $($wb.Name)"
+    if (Test-Path $savePath) {{ Remove-Item $savePath -Force }}
+    $wb.SaveAs($savePath, 52)
+    Write-Host "SHELL SAVED: $savePath"
 
     # --- STEP 3: import VBA modules into the saved xlsm ---
 {imports_block}
